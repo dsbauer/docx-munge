@@ -26,12 +26,22 @@ function buildIndex() {
   return fileIndex;
 }
 
-function loadXML() {
+var cachedDocumentXML = '';
+function loadDocumentXML() {
   var fullpath = `${dataPath}/word/document.xml`;
   var xml = fs.readFileSync(fullpath,'utf-8');
+  cachedDocumentXML = xml;
   return xml;
 }
-
+function rewriteDocument(swapUrls) {
+  var xml = cachedDocumentXML;
+  var fullpath = `${dataPath}/word/document.xml`;
+  for (var old in swapUrls) {
+    var parts = xml.split(old);
+    xml = parts.join(swapUrls[old]);
+  }
+  fs.writeFileSync(fullpath,xml,null);
+}
 
 //var hyperlinkRE = /<w:hyperlink r:id="(\w+)"(.(?!\/w:hyperlink>))+/;//<\/w:hyperlink>/;
 //var startHyperRE = /<w:hyperlink r:id="(\w+)"(.+)$/;
@@ -69,34 +79,40 @@ function redirectRels(fileIndex,refIndex) {
     var key = docName+'-'+str;
     var filename = fileIndex[key];
     if (filename)
-      return docName+'/'+filename;
+      return filename;//docName+'/'+filename;
     console.log(`No file in ${docName} named ${key}...; keeping original URL`);
   }
 
   return mapValues(refIndex,(val,key)=>citenumToUrl(val))
 }
 
-var schema= "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+//var schema= "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+var urlSwap = {}; //inferred mapping from old URLs to new file names (without path prefix)
+
 function mapReferences(xml,refIndex) {
-  var urlSwap = {};
   var delim = '<Relationship ';
   var refs = xml.split(delim);
-  var newrefs = refs.map(ref=>{
-    var match = ref.match(/Id="(\w+)".+Target="(http[^"]+pdf)"/),
+  var IdTargetRE = /Id="(\w+)".+Target="(http[^"]+pdf)"/;
+  // First pass: collect old->new mappings
+  refs.forEach(ref=>{
+    var match = ref.match(IdTargetRE),
         refid = match && match[1],
         oldUrl = match && match[2],
         newUrl = refid && refIndex[refid];
     if (newUrl && oldUrl)
       urlSwap[oldUrl]=newUrl;
-    newURL = urlSwap[oldUrl];
+  });
+  // Second pass: apply old->new mappings
+  var newrefs = refs.map(ref=>{
+    var match = ref.match(IdTargetRE),
+        oldUrl = match && match[2],
+        newUrl = oldUrl && urlSwap[oldUrl];//filename only
     if (!newUrl)
       return ref;
-    var newTarget = `file://${archivePath}/${newUrl}`;
+    var newTarget = `file://${archivePath}/${docName}/${newUrl}`;
     return ref.replace(oldUrl,newTarget);
-    //return `Id="${refid}" Type="${schema}" Target="file://${archivePath}/${newUrl}" TargetMode="External"/>`
-  });
+  })
 
-  
   console.log('URL swap:');
   console.log(urlSwap);
   return newrefs.join(delim);
@@ -126,7 +142,7 @@ function rewriteRefs(newIndex) {
 var fileIndex = buildIndex();//maps citation (IVC3-99) to file in docPath (IVC3-99-whatevs.pdf)
 console.log('File Index:');
 console.log(fileIndex);
-var refIndex = findHyperlink(loadXML());//maps reference ids (rId1345) to citation # (99)
+var refIndex = findHyperlink(loadDocumentXML());//maps reference ids (rId1345) to citation # (99)
 console.log('Ref Index:');
 console.log(refIndex);
 var newRels = redirectRels(fileIndex,refIndex);//maps reference ids (r12345) to local URIs (somewhere/IVC3-99-whatevs.pdf)
@@ -134,3 +150,4 @@ console.log('New URIs:');
 console.log(newRels);
 var newRelsXML = rewriteRefs(newRels);//XML content of rels file
 //console.log(newRelsXML);
+rewriteDocument(urlSwap);
